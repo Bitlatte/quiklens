@@ -1,198 +1,159 @@
+// components/custom/ImageDisplayArea.tsx
 "use client";
 
-import React, { useRef, useEffect, useState, MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, MouseEvent as ReactMouseEvent } from 'react';
 import type { CropRegion, AspectRatioOption } from '@/lib/types';
+import { useImageZoomPan } from '@/lib/hooks/useImageZoomPan';
+import { useImageCropHandler } from '@/lib/hooks/useImageCropHandler';
+import { useEditorStore } from '@/lib/store'; // Import the Zustand store
 
-const HANDLE_SIZE = 8; 
-const MIN_CROP_SIZE_ON_CANVAS = 10; 
-const MIN_ZOOM = 0.1; 
-const MAX_ZOOM = 10;  
-const ZOOM_SENSITIVITY = 0.001;
+const HANDLE_SIZE = 8;
 
+// Props interface will be empty as all data comes from the store or is internal
 interface ImageDisplayAreaProps {
-  originalImagePreview: string | null;
-  processedImageUrl: string | null;
-  isLoading: boolean;
-  hasSelectedFile: boolean;
-  isCropping: boolean;
-  uiCropRegion: Partial<CropRegion> | null; 
-  onUiCropRegionChange: (newRegion: Partial<CropRegion>) => void;
-  currentAspectRatio: AspectRatioOption;
-  originalImageDimensions: { width: number; height: number } | null;
+  // key prop is handled by React, no need to define here
+  originalImagePreviewFromStore: string | null; // Renaming to avoid conflict with internal variable if any
+  imageDisplayKeySuffixFromStore: number; // To re-trigger effects if needed, though key on component is better
 }
 
-const getAspectRatioValue = (aspectRatio: AspectRatioOption): number | null => {
-  if (aspectRatio === "1:1") return 1;
-  if (aspectRatio === "16:9") return 16 / 9;
-  if (aspectRatio === "9:16") return 9 / 16;
-  if (aspectRatio === "4:3") return 4 / 3;
-  if (aspectRatio === "3:4") return 3 / 4;
-  return null;
-};
 
-
-export function ImageDisplayArea({
-  originalImagePreview,
-  processedImageUrl,
-  isLoading,
-  hasSelectedFile,
-  isCropping,
-  uiCropRegion,
-  onUiCropRegionChange,
-  currentAspectRatio,
-  originalImageDimensions,
-}: ImageDisplayAreaProps) {
+export function ImageDisplayArea({ originalImagePreviewFromStore, imageDisplayKeySuffixFromStore }: ImageDisplayAreaProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
 
-  const [zoomLevel, setZoomLevel] = useState<number>(1);
-  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState<boolean>(false);
-  const [lastPanPoint, setLastPanPoint] = useState<{ x: number; y: number } | null>(null);
-  const [isSpacebarDown, setIsSpacebarDown] = useState<boolean>(false);
-  
+  // Select state directly from the Zustand store
+  const isLoading = useEditorStore(state => state.isLoading);
+  const selectedFile = useEditorStore(state => state.selectedFile);
+  const isCropping = useEditorStore(state => state.isCropping);
+  const uiCropRegion = useEditorStore(state => state.uiCropRegion);
+  const currentAspectRatio = useEditorStore(state => state.currentAspectRatio);
+  const currentBaseImageDimensions = useEditorStore(state => state.currentBaseImageDimensions); // This is what was 'originalImageDimensions' prop
+
+  // Get actions from the store
+  const setUiCropRegion = useEditorStore(state => state.setUiCropRegion);
+
+  const hasSelectedFile = !!selectedFile;
+  const displayUrl = originalImagePreviewFromStore; // Use the prop passed for the image URL
+
   const [containerDims, setContainerDims] = useState<{ width: number; height: number } | null>(null);
+  const [hoveredMouseCanvasPos, setHoveredMouseCanvasPos] = useState<{x: number, y: number} | null>(null);
 
-  const [activeDragHandle, setActiveDragHandle] = useState<string | null>(null);
-  const [dragStartCoords, setDragStartCoords] = useState<{ x: number; y: number } | null>(null);
-  const [initialCropOnDragStart, setInitialCropOnDragStart] = useState<Partial<CropRegion> | null>(null);
+  const {
+    zoomLevel, panOffset, isPanning, isSpacebarDown,
+    handleWheel, startPan, pan: performPan, endPan,
+    getMousePosOnCanvas, canvasToImageCoords,
+    resetZoomPan, setZoomLevel: setHookZoomLevel, setPanOffset: setHookPanOffset,
+  } = useImageZoomPan({
+    canvasRef,
+    imageRef,
+    containerDims,
+    isCropping, // from store
+  });
 
-  const displayUrl = processedImageUrl || originalImagePreview;
+  const {
+    activeDragHandle, getHandleAtPosition,
+    cropMouseDownHandler, cropMouseMoveHandler, cropMouseUpHandler,
+  } = useImageCropHandler({
+    isCropping, // from store
+    uiCropRegion, // from store
+    onUiCropRegionChange: setUiCropRegion, // from store
+    currentViewDimensions: currentBaseImageDimensions, // from store
+    currentAspectRatio, // from store
+    zoomLevel, // from useImageZoomPan
+    canvasToImageCoords, // from useImageZoomPan
+    getMousePosOnCanvas, // from useImageZoomPan
+    imageRef,
+  });
 
-  // Observe container size changes
   useEffect(() => {
     const containerElement = containerRef.current;
     if (!containerElement) return;
-
     const observer = new ResizeObserver(entries => {
       for (let entry of entries) {
         const { width, height } = entry.contentRect;
         setContainerDims({ width, height });
-        console.log(`[ImageDisplayArea] Resized. Container Dims: ${width}x${height}`);
       }
     });
     observer.observe(containerElement);
-    // Initial set
     setContainerDims({width: containerElement.clientWidth, height: containerElement.clientHeight});
     return () => observer.disconnect();
   }, []);
 
-
-  const calculateAndSetInitialView = useCallback(() => {
-    if (!imageRef.current || !containerDims || containerDims.width === 0 || containerDims.height === 0) {
-        console.log("[ImageDisplayArea] calculateInitialView: Missing image, container, or container dimensions.");
-        return;
-    }
-    const img = imageRef.current;
-    const { width: containerWidth, height: containerHeight } = containerDims;
-
-    if (img.naturalWidth === 0 || img.naturalHeight === 0) {
-        console.log("[ImageDisplayArea] calculateInitialView: Image natural dimensions are zero.");
-        return;
-    }
-
-    const imageAspectRatio = img.naturalWidth / img.naturalHeight;
-    const containerAspectRatio = containerWidth / containerHeight;
-    let initialZoom;
-
-    if (imageAspectRatio > containerAspectRatio) {
-      initialZoom = containerWidth / img.naturalWidth;
-    } else {
-      initialZoom = containerHeight / img.naturalHeight;
-    }
-    
-    const renderWidth = img.naturalWidth * initialZoom;
-    const renderHeight = img.naturalHeight * initialZoom;
-    const imageX = (containerWidth - renderWidth) / 2;
-    const imageY = (containerHeight - renderHeight) / 2;
-
-    setZoomLevel(initialZoom);
-    setPanOffset({ x: imageX, y: imageY });
-    console.log(`[ImageDisplayArea] Calculated initial view. Zoom: ${initialZoom}, Pan: {x: ${imageX}, y: ${imageY}}`);
-  }, [containerDims]);
-
-
-  // Load image and then calculate initial fit
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    
-    if (!displayUrl) {
+    if (!displayUrl) { // displayUrl is originalImagePreviewFromStore
       const ctx = canvas.getContext('2d');
       if (ctx && canvas.width > 0 && canvas.height > 0) {
-        ctx.clearRect(0, 0, canvas.width / (window.devicePixelRatio || 1), canvas.height / (window.devicePixelRatio || 1));
+        const dpr = window.devicePixelRatio || 1;
+        ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
       }
       imageRef.current = null;
-      setZoomLevel(1); // Reset zoom/pan
-      setPanOffset({ x: 0, y: 0 });
+      setHookZoomLevel(1); setHookPanOffset({ x: 0, y: 0 });
       return;
     }
-
     const img = new Image();
-    img.onload = () => {
-      imageRef.current = img;
-      console.log(`[ImageDisplayArea] Image loaded: ${img.src}. Natural Dims: ${img.naturalWidth}x${img.naturalHeight}`);
-      calculateAndSetInitialView(); 
-    };
-    img.onerror = () => { console.error("[ImageDisplayArea] Failed to load image for canvas:", displayUrl); imageRef.current = null; };
+    img.onload = () => { imageRef.current = img; resetZoomPan(); };
+    img.onerror = () => { console.error("Failed to load image:", displayUrl); imageRef.current = null; };
     img.src = displayUrl;
-
     return () => { img.onload = null; img.onerror = null; };
-  }, [displayUrl, calculateAndSetInitialView]);
+  }, [displayUrl, resetZoomPan, setHookZoomLevel, setHookPanOffset, imageDisplayKeySuffixFromStore]); // Added imageDisplayKeySuffixFromStore
 
+  useEffect(() => {
+    const handleGlobalMouseMove = (event: MouseEvent) => {
+      if (isPanning) performPan(event as unknown as ReactMouseEvent<HTMLDivElement>);
+      if (activeDragHandle) cropMouseMoveHandler(event as unknown as ReactMouseEvent<HTMLDivElement>);
+    };
+    const handleGlobalMouseUp = () => {
+      if (isPanning) endPan();
+      if (activeDragHandle) cropMouseUpHandler();
+    };
 
-  // Main drawing effect (Image, Crop UI)
+    if (isPanning || activeDragHandle) {
+      window.addEventListener('mousemove', handleGlobalMouseMove);
+      window.addEventListener('mouseup', handleGlobalMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [isPanning, performPan, endPan, activeDragHandle, cropMouseMoveHandler, cropMouseUpHandler]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !imageRef.current || !originalImageDimensions || !containerDims) return; 
-    
+    if (!canvas || !imageRef.current || !currentBaseImageDimensions || !containerDims) return; // Use currentBaseImageDimensions from store
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
     const dpr = window.devicePixelRatio || 1;
     const { width: containerWidth, height: containerHeight } = containerDims;
-
-    if (containerWidth === 0 || containerHeight === 0) return; 
-
+    if (containerWidth === 0 || containerHeight === 0) return;
     if (canvas.width !== Math.round(containerWidth * dpr) || canvas.height !== Math.round(containerHeight * dpr)) {
         canvas.width = Math.round(containerWidth * dpr);
         canvas.height = Math.round(containerHeight * dpr);
     }
-    canvas.style.width = `${containerWidth}px`;
-    canvas.style.height = `${containerHeight}px`;
-    
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); 
+    canvas.style.width = `${containerWidth}px`; canvas.style.height = `${containerHeight}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, containerWidth, containerHeight);
-
     ctx.save();
-    ctx.translate(panOffset.x, panOffset.y);
-    ctx.scale(zoomLevel, zoomLevel);
-    ctx.drawImage(imageRef.current, 0, 0, imageRef.current.naturalWidth, imageRef.current.naturalHeight);
+    ctx.translate(panOffset.x, panOffset.y); ctx.scale(zoomLevel, zoomLevel);
+    if (imageRef.current) {
+        ctx.drawImage(imageRef.current, 0, 0, imageRef.current.naturalWidth, imageRef.current.naturalHeight);
+    }
     ctx.restore();
-
-    if (isCropping && uiCropRegion && uiCropRegion.width && uiCropRegion.height) {
+    if (isCropping && uiCropRegion && uiCropRegion.width && uiCropRegion.height && imageRef.current) {
       ctx.save();
-      ctx.translate(panOffset.x, panOffset.y);
-      ctx.scale(zoomLevel, zoomLevel);
-
-      const cropX = uiCropRegion.left ?? 0;
-      const cropY = uiCropRegion.top ?? 0;
-      const cropWidth = uiCropRegion.width;
-      const cropHeight = uiCropRegion.height;
-
+      ctx.translate(panOffset.x, panOffset.y); ctx.scale(zoomLevel, zoomLevel);
+      const cropX = uiCropRegion.left ?? 0; const cropY = uiCropRegion.top ?? 0;
+      const cropWidth = uiCropRegion.width; const cropHeight = uiCropRegion.height;
       ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      const imgNatW = imageRef.current.naturalWidth;
-      const imgNatH = imageRef.current.naturalHeight;
+      const imgNatW = imageRef.current.naturalWidth; const imgNatH = imageRef.current.naturalHeight;
       ctx.fillRect(0, 0, imgNatW, cropY);
       ctx.fillRect(0, cropY + cropHeight, imgNatW, imgNatH - (cropY + cropHeight));
       ctx.fillRect(0, cropY, cropX, cropHeight);
       ctx.fillRect(cropX + cropWidth, cropY, imgNatW - (cropX + cropWidth), cropHeight);
-      
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-      ctx.lineWidth = 1 / zoomLevel / dpr;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)"; ctx.lineWidth = 1 / zoomLevel;
       ctx.strokeRect(cropX, cropY, cropWidth, cropHeight);
-
       ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
       const oneThirdHeight = cropHeight / 3;
       ctx.beginPath();
@@ -204,240 +165,66 @@ export function ImageDisplayArea({
       ctx.moveTo(cropX + oneThirdWidth, cropY); ctx.lineTo(cropX + oneThirdWidth, cropY + cropHeight);
       ctx.moveTo(cropX + 2 * oneThirdWidth, cropY); ctx.lineTo(cropX + 2 * oneThirdWidth, cropY + cropHeight);
       ctx.stroke();
-
       ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-      const handleScreenSizeTarget = HANDLE_SIZE / dpr;
+      const handleScreenSizeTarget = HANDLE_SIZE;
       const handleImageCoordSize = handleScreenSizeTarget / zoomLevel;
-
       const handlesData = [
-        { id: 'topLeft',     x: cropX,                         y: cropY },
-        { id: 'topRight',    x: cropX + cropWidth,             y: cropY },
-        { id: 'bottomLeft',  x: cropX,                         y: cropY + cropHeight },
-        { id: 'bottomRight', x: cropX + cropWidth,             y: cropY + cropHeight },
-        { id: 'top',         x: cropX + cropWidth / 2,         y: cropY },
-        { id: 'bottom',      x: cropX + cropWidth / 2,         y: cropY + cropHeight },
-        { id: 'left',        x: cropX,                         y: cropY + cropHeight / 2 },
-        { id: 'right',       x: cropX + cropWidth,             y: cropY + cropHeight / 2 },
+        { id: 'topLeft', x: cropX, y: cropY }, { id: 'topRight', x: cropX + cropWidth, y: cropY },
+        { id: 'bottomLeft', x: cropX, y: cropY + cropHeight }, { id: 'bottomRight', x: cropX + cropWidth, y: cropY + cropHeight },
+        { id: 'top', x: cropX + cropWidth / 2, y: cropY }, { id: 'bottom', x: cropX + cropWidth / 2, y: cropY + cropHeight },
+        { id: 'left', x: cropX, y: cropY + cropHeight / 2 }, { id: 'right', x: cropX + cropWidth, y: cropY + cropHeight / 2 },
       ];
       handlesData.forEach(h => ctx.fillRect(h.x - handleImageCoordSize/2, h.y - handleImageCoordSize/2, handleImageCoordSize, handleImageCoordSize));
       ctx.restore();
     }
+  }, [displayUrl, panOffset, zoomLevel, isCropping, uiCropRegion, currentBaseImageDimensions, containerDims, imageDisplayKeySuffixFromStore]); // Added imageDisplayKeySuffixFromStore
 
-  }, [displayUrl, panOffset, zoomLevel, isCropping, uiCropRegion, originalImageDimensions, containerDims]);
-
-  const getMousePosOnCanvas = (event: ReactMouseEvent<HTMLCanvasElement> | MouseEvent): { x: number; y: number } => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const handleCanvasMouseDown = (event: ReactMouseEvent<HTMLCanvasElement>) => {
+    if (isSpacebarDown) return;
+    cropMouseDownHandler(event);
   };
 
-  const canvasToImageCoords = (canvasX: number, canvasY: number): { x: number; y: number } => {
-    return {
-      x: (canvasX - panOffset.x) / zoomLevel,
-      y: (canvasY - panOffset.y) / zoomLevel,
-    };
-  };
-  
-  const imageToCanvasCoords = (imageX: number, imageY: number): { x: number; y: number } => {
-      return {
-          x: (imageX * zoomLevel) + panOffset.x,
-          y: (imageY * zoomLevel) + panOffset.y,
-      };
-  };
-
-  const handleWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
-    if (!imageRef.current || !containerDims || containerDims.width === 0 || containerDims.height === 0) return;
-    event.preventDefault();
-    
-    const mousePos = getMousePosOnCanvas(event);
-    const imageMousePosBeforeZoom = canvasToImageCoords(mousePos.x, mousePos.y);
-
-    let newZoomLevel = zoomLevel * (1 - event.deltaY * ZOOM_SENSITIVITY);
-    newZoomLevel = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoomLevel));
-
-    const newPanOffsetX = mousePos.x - (imageMousePosBeforeZoom.x * newZoomLevel);
-    const newPanOffsetY = mousePos.y - (imageMousePosBeforeZoom.y * newZoomLevel);
-
-    setZoomLevel(newZoomLevel);
-    setPanOffset({ x: newPanOffsetX, y: newPanOffsetY });
-  };
-  
-  useEffect(() => { 
-    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === ' ') setIsSpacebarDown(true); };
-    const handleKeyUp = (e: KeyboardEvent) => { if (e.key === ' ') { setIsSpacebarDown(false); setIsPanning(false); }};
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, []);
-
-  const getHandleAtPosition = (mouseX_canvas: number, mouseY_canvas: number): string | null => {
-    if (!uiCropRegion || !originalImageDimensions || !uiCropRegion.width || !uiCropRegion.height || !imageRef.current) return null;
-
-    const { x: imgMouseX, y: imgMouseY } = canvasToImageCoords(mouseX_canvas, mouseY_canvas);
-
-    const cropX = uiCropRegion.left ?? 0;
-    const cropY = uiCropRegion.top ?? 0;
-    const cropWidth = uiCropRegion.width;
-    const cropHeight = uiCropRegion.height;
-    
-    const handleImageCoordSize = (HANDLE_SIZE / (window.devicePixelRatio || 1)) / zoomLevel;
-    const handleTouchRadiusImageCoords = handleImageCoordSize * 1.5;
-
-    const corners: Record<string, {x: number, y: number}> = { // Explicit type for corners
-        topLeft: { x: cropX, y: cropY }, 
-        topRight: { x: cropX + cropWidth, y: cropY },
-        bottomLeft: { x: cropX, y: cropY + cropHeight }, 
-        bottomRight: { x: cropX + cropWidth, y: cropY + cropHeight },
-    };
-    for (const [id, pos] of Object.entries(corners)) {
-        if (Math.hypot(imgMouseX - pos.x, imgMouseY - pos.y) < handleTouchRadiusImageCoords) return id;
-    }
-
-    const edges: Record<string, {x1: number, y1: number, x2: number, y2: number}> = { // Explicit type for edges
-        top: { x1: cropX, y1: cropY, x2: cropX + cropWidth, y2: cropY },
-        bottom: { x1: cropX, y1: cropY + cropHeight, x2: cropX + cropWidth, y2: cropY + cropHeight },
-        left: { x1: cropX, y1: cropY, x2: cropX, y2: cropY + cropHeight },
-        right: { x1: cropX + cropWidth, y1: cropY, x2: cropX + cropWidth, y2: cropY + cropHeight },
-    };
-     for (const [id, line] of Object.entries(edges)) {
-        if (id === 'top' || id === 'bottom') { 
-            if (Math.abs(imgMouseY - line.y1) < handleTouchRadiusImageCoords && imgMouseX >= line.x1 - handleTouchRadiusImageCoords && imgMouseX <= line.x2 + handleTouchRadiusImageCoords) return id;
-        } else { 
-             if (Math.abs(imgMouseX - line.x1) < handleTouchRadiusImageCoords && imgMouseY >= line.y1 - handleTouchRadiusImageCoords && imgMouseY <= line.y2 + handleTouchRadiusImageCoords) return id;
-        }
-    }
-    
-    if (imgMouseX > cropX && imgMouseX < cropX + cropWidth && imgMouseY > cropY && imgMouseY < cropY + cropHeight) return 'move';
-    return null;
-  };
-  
-  const handleMouseDownCanvas = (event: ReactMouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasMouseMove = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const mousePosCanvas = getMousePosOnCanvas(event);
-    if (isSpacebarDown) {
-        setIsPanning(true); setLastPanPoint(mousePosCanvas); event.preventDefault(); return;
-    }
-    if (!isCropping || !originalImageDimensions || !uiCropRegion) return; 
-    const handle = getHandleAtPosition(mousePosCanvas.x, mousePosCanvas.y);
-    if (handle) {
-        setActiveDragHandle(handle); setDragStartCoords(mousePosCanvas); 
-        const currentUiCrop = uiCropRegion || {};
-        setInitialCropOnDragStart({
-            left: currentUiCrop.left ?? 0, top: currentUiCrop.top ?? 0,
-            width: currentUiCrop.width ?? originalImageDimensions.width,
-            height: currentUiCrop.height ?? originalImageDimensions.height,
-        });
-        event.preventDefault();
+    setHoveredMouseCanvasPos(mousePosCanvas);
+  };
+
+  const handleCanvasMouseUp = () => { /* Global listener handles active drags */ };
+  const handleCanvasMouseLeave = () => {
+    if (!activeDragHandle && !isPanning) {
+        setHoveredMouseCanvasPos(null);
     }
   };
 
-  const handleMouseMoveCanvas = (event: ReactMouseEvent<HTMLCanvasElement>) => {
-    const mousePosCanvas = getMousePosOnCanvas(event);
-    if (isPanning && lastPanPoint) {
-        const dx = mousePosCanvas.x - lastPanPoint.x;
-        const dy = mousePosCanvas.y - lastPanPoint.y;
-        setPanOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
-        setLastPanPoint(mousePosCanvas);
-        event.preventDefault(); return;
-    }
-    if (!isCropping || !activeDragHandle || !dragStartCoords || !initialCropOnDragStart || !originalImageDimensions || !uiCropRegion) return;
-
-    const startImgCoords = canvasToImageCoords(dragStartCoords.x, dragStartCoords.y);
-    const currentImgCoords = canvasToImageCoords(mousePosCanvas.x, mousePosCanvas.y);
-    const deltaImgX = currentImgCoords.x - startImgCoords.x;
-    const deltaImgY = currentImgCoords.y - startImgCoords.y;
-
-    let newLeft = initialCropOnDragStart.left ?? 0;
-    let newTop = initialCropOnDragStart.top ?? 0;
-    let newWidth = initialCropOnDragStart.width ?? 0;
-    let newHeight = initialCropOnDragStart.height ?? 0;
-
-    const aspectRatioVal = getAspectRatioValue(currentAspectRatio);
-    const minCropSizeOriginal = MIN_CROP_SIZE_ON_CANVAS / zoomLevel;
-
-    switch (activeDragHandle) {
-        case 'move': newLeft += deltaImgX; newTop += deltaImgY; break;
-        case 'topLeft': newLeft += deltaImgX; newTop += deltaImgY; newWidth -= deltaImgX; newHeight -= deltaImgY; break;
-        case 'topRight': newTop += deltaImgY; newWidth += deltaImgX; newHeight -= deltaImgY; break;
-        case 'bottomLeft': newLeft += deltaImgX; newWidth -= deltaImgX; newHeight += deltaImgY; break;
-        case 'bottomRight': newWidth += deltaImgX; newHeight += deltaImgY; break;
-        case 'top': newTop += deltaImgY; newHeight -= deltaImgY; break;
-        case 'bottom': newHeight += deltaImgY; break;
-        case 'left': newLeft += deltaImgX; newWidth -= deltaImgX; break;
-        case 'right': newWidth += deltaImgX; break;
-    }
-
-    if (newWidth < 0) { newLeft += newWidth; newWidth = Math.abs(newWidth); }
-    if (newHeight < 0) { newTop += newHeight; newHeight = Math.abs(newHeight); }
-
-    if (aspectRatioVal && activeDragHandle !== 'move') {
-      if (activeDragHandle.includes('Left') || activeDragHandle.includes('Right') || activeDragHandle === 'bottomRight' || activeDragHandle === 'topLeft') {
-          newHeight = newWidth / aspectRatioVal;
-      } else if (activeDragHandle.includes('Top') || activeDragHandle.includes('Bottom')) {
-          newWidth = newHeight * aspectRatioVal;
-      }
-      // Re-anchor logic for corner handles when aspect ratio is fixed
-      if (activeDragHandle === 'topLeft') {
-          newLeft = (initialCropOnDragStart.left ?? 0) + (initialCropOnDragStart.width ?? 0) - newWidth;
-          newTop = (initialCropOnDragStart.top ?? 0) + (initialCropOnDragStart.height ?? 0) - newHeight;
-      } else if (activeDragHandle === 'topRight') {
-          newTop = (initialCropOnDragStart.top ?? 0) + (initialCropOnDragStart.height ?? 0) - newHeight;
-      } else if (activeDragHandle === 'bottomLeft') {
-          newLeft = (initialCropOnDragStart.left ?? 0) + (initialCropOnDragStart.width ?? 0) - newWidth;
-      }
-      // For edge handles, adjust position to keep center or opposite edge fixed
-      if (activeDragHandle === 'top') newLeft = (initialCropOnDragStart.left ?? 0) + ((initialCropOnDragStart.width ?? 0) - newWidth) / 2;
-      if (activeDragHandle === 'bottom') newLeft = (initialCropOnDragStart.left ?? 0) + ((initialCropOnDragStart.width ?? 0) - newWidth) / 2;
-      if (activeDragHandle === 'left') newTop = (initialCropOnDragStart.top ?? 0) + ((initialCropOnDragStart.height ?? 0) - newHeight) / 2;
-      if (activeDragHandle === 'right') newTop = (initialCropOnDragStart.top ?? 0) + ((initialCropOnDragStart.height ?? 0) - newHeight) / 2;
-    }
-    
-    newWidth = Math.max(minCropSizeOriginal, newWidth);
-    newHeight = Math.max(minCropSizeOriginal, newHeight);
-
-    newLeft = Math.max(0, Math.min(newLeft, originalImageDimensions.width - newWidth));
-    newTop = Math.max(0, Math.min(newTop, originalImageDimensions.height - newHeight));
-    newWidth = Math.min(newWidth, originalImageDimensions.width - newLeft);
-    newHeight = Math.min(newHeight, originalImageDimensions.height - newTop);
-
-    if (aspectRatioVal) {
-        if (Math.abs(newWidth / newHeight - aspectRatioVal) > 0.001) { 
-            let h = newWidth / aspectRatioVal;
-            if (h + newTop <= originalImageDimensions.height && h >= minCropSizeOriginal) {
-                newHeight = h;
-            } else { 
-                let w = newHeight * aspectRatioVal;
-                if (w + newLeft <= originalImageDimensions.width && w >= minCropSizeOriginal) {
-                    newWidth = w;
-                }
-            }
+  const cursorStyle = (() => {
+    if (isSpacebarDown) return isPanning ? 'grabbing' : 'grab';
+    if (isCropping) {
+      if (activeDragHandle) return 'grabbing';
+      if (hoveredMouseCanvasPos && canvasRef.current) {
+        const handle = getHandleAtPosition(hoveredMouseCanvasPos.x, hoveredMouseCanvasPos.y);
+        if (handle) {
+            if (handle.includes('Left') || handle.includes('Right')) return 'ew-resize';
+            if (handle.includes('Top') || handle.includes('Bottom')) return 'ns-resize';
+            if (handle === 'topLeft' || handle === 'bottomRight') return 'nwse-resize';
+            if (handle === 'topRight' || handle === 'bottomLeft') return 'nesw-resize';
+            if (handle === 'move') return 'move';
         }
+      }
+      return 'crosshair';
     }
-
-    onUiCropRegionChange({
-        left: Math.round(newLeft), top: Math.round(newTop),
-        width: Math.round(newWidth), height: Math.round(newHeight),
-    });
-  };
-
-  const handleMouseUpCanvas = () => {
-    if (isPanning) setIsPanning(false);
-    if (activeDragHandle) setActiveDragHandle(null);
-    setLastPanPoint(null); setDragStartCoords(null); setInitialCropOnDragStart(null);
-  };
-  const handleMouseLeaveCanvas = () => {
-    if (isPanning) setIsPanning(false);
-    if (activeDragHandle) handleMouseUpCanvas();
-  };
+    return 'default';
+  })();
 
   return (
-    <div 
-        ref={containerRef} 
+    <div
+        ref={containerRef}
         className="flex-1 flex items-center justify-center p-6 bg-muted/30 relative overflow-hidden"
-        style={{ cursor: isSpacebarDown ? (isPanning ? 'grabbing' : 'grab') : (isCropping && activeDragHandle ? 'grabbing' : (isCropping ? 'crosshair' : 'default')) }}
+        style={{ cursor: cursorStyle }}
+        onMouseDown={startPan}
+        onMouseMove={ (e) => {
+            const pos = getMousePosOnCanvas(e as unknown as ReactMouseEvent<HTMLDivElement>);
+            setHoveredMouseCanvasPos(pos);
+        }}
     >
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/75 backdrop-blur-sm z-20">
@@ -452,18 +239,18 @@ export function ImageDisplayArea({
       )}
       {!isLoading && !hasSelectedFile && (
         <div className="text-center text-muted-foreground">
-          <h2 className="text-2xl font-semibold mb-3">Welcome to QuickTune</h2>
+          <h2 className="text-2xl font-semibold mb-3">Welcome to QuikLens</h2>
           <p>Click "Open Image" from the File menu to begin editing.</p>
         </div>
       )}
       <canvas
         ref={canvasRef}
         className={`shadow-xl ${(!displayUrl || !hasSelectedFile || (isLoading && !displayUrl)) ? 'hidden' : ''}`}
-        onWheel={hasSelectedFile ? handleWheel : undefined} // Only enable wheel if image is loaded
-        onMouseDown={hasSelectedFile ? handleMouseDownCanvas : undefined} // Only enable if image is loaded
-        onMouseMove={hasSelectedFile && (isPanning || activeDragHandle) ? handleMouseMoveCanvas : undefined}
-        onMouseUp={hasSelectedFile && (isPanning || activeDragHandle) ? handleMouseUpCanvas : undefined}
-        onMouseLeave={hasSelectedFile && (isPanning || activeDragHandle) ? handleMouseLeaveCanvas : undefined}
+        onWheel={hasSelectedFile ? handleWheel : undefined}
+        onMouseDown={hasSelectedFile ? handleCanvasMouseDown : undefined}
+        onMouseMove={hasSelectedFile ? handleCanvasMouseMove : undefined}
+        onMouseUp={hasSelectedFile ? handleCanvasMouseUp : undefined} // Global listeners handle active drag
+        onMouseLeave={hasSelectedFile ? handleCanvasMouseLeave : undefined} // Global listeners handle active drag
       />
     </div>
   );

@@ -1,9 +1,11 @@
+// app/api/image/process/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import sharp, { Sharp, Region, Metadata } from 'sharp'; // Import Region and Metadata
+import sharp, { Sharp, Region, Metadata } from 'sharp';
 import type { ImageProcessingParams, ImageEffectType, ProcessImageResponse } from '@/lib/types';
 
-// --- Helper functions (exposureToBrightnessMultiplier, temperatureToRgbTint, greenMagentaTintToRgb) remain the same ---
+// Helper functions (exposureToBrightnessMultiplier, temperatureToRgbTint, greenMagentaTintToRgb)
 function exposureToBrightnessMultiplier(ev: number): number { return Math.pow(2, ev); }
+
 function temperatureToRgbTint(temp: number): { r: number; g: number; b: number } | null {
   if (temp === 0) return null;
   const intensity = Math.abs(temp) / 100.0;
@@ -17,6 +19,7 @@ function temperatureToRgbTint(temp: number): { r: number; g: number; b: number }
   }
   return { r, g, b };
 }
+
 function greenMagentaTintToRgb(tintValue: number): { r: number; g: number; b: number } | null {
   if (tintValue === 0) return null;
   const intensity = Math.abs(tintValue) / 100.0;
@@ -55,104 +58,113 @@ export async function POST(request: NextRequest): Promise<NextResponse | Respons
     const initialMetadata: Metadata = await pImage.metadata();
     console.log('API: Initial image metadata:', { width: initialMetadata.width, height: initialMetadata.height, format: initialMetadata.format });
 
-
-    // --- Apply Crop First if specified ---
-    if ((effect === 'crop' || effect === 'applyAll') && params.crop) {
+    // --- Apply Crop First if specified in params, regardless of the main 'effect' type, if params.crop exists ---
+    // This ensures crop is always from the original if a crop region is provided.
+    if (params.crop) {
         const { left, top, width, height } = params.crop;
         if (width > 0 && height > 0 && left >= 0 && top >= 0 &&
-            left + width <= (initialMetadata.width || Infinity) && // Basic bounds check
+            left + width <= (initialMetadata.width || Infinity) &&
             top + height <= (initialMetadata.height || Infinity)
         ) {
-            console.log('API: Applying crop:', params.crop);
+            console.log('API: Applying crop region from params:', params.crop);
             try {
-                pImage = pImage.extract(params.crop as Region); // This reassigns pImage
-                const metadataAfterCrop: Metadata = await pImage.metadata();
-                console.log('API: Metadata AFTER CROP:', { width: metadataAfterCrop.width, height: metadataAfterCrop.height, format: metadataAfterCrop.format });
+                pImage = pImage.extract(params.crop as Region);
+                const metadataAfterCrop: Metadata = await pImage.metadata(); // Get new metadata after extract
+                console.log('API: Metadata AFTER CROP extraction:', { width: metadataAfterCrop.width, height: metadataAfterCrop.height });
             } catch (cropError: any) {
                 console.error("API: Error during pImage.extract():", cropError.message);
                 return NextResponse.json({ error: 'Failed during crop extraction.', details: cropError.message } as ProcessImageResponse, { status: 500 });
             }
         } else {
-            console.warn('API: Invalid or out-of-bounds crop parameters received:', params.crop, "Original Dims:", initialMetadata);
-            // Decide if you want to proceed without crop or return an error
-            // For now, we proceed, and other adjustments will apply to the uncropped image if crop is invalid.
+            console.warn('API: Invalid or out-of-bounds crop parameters received, skipping crop:', params.crop, "Original Dims:", initialMetadata);
+            // If crop is invalid, we proceed with the uncropped image (or previously cropped if chaining correctly)
         }
     }
 
-    // If the effect is ONLY crop, we can skip other adjustments for focused debugging
-    // if (effect === 'crop') {
-    //   // For debugging, just output the (hopefully) cropped image
-    //   const outputBufferOnlyCrop: Buffer = await pImage.png().toBuffer();
-    //   console.log("API: Returning ONLY CROPPED image buffer. Size:", outputBufferOnlyCrop.length);
-    //   return new Response(outputBufferOnlyCrop, {
-    //     status: 200,
-    //     headers: { 'Content-Type': 'image/png', 'Content-Disposition': `inline; filename="cropped_debug.png"`},
-    //   });
-    // }
-
-
-    if (effect === 'grayscale') {
-      pImage = pImage.grayscale();
-    } else if (effect === 'applyAll' || ['brightness', 'exposure', 'temperature', 'contrast', 'saturation', 'tint', 'sharpness'].includes(effect)) {
-      // Only apply these if not *just* a crop effect (or if applyAll)
-      // This 'if' condition might need adjustment if crop was already handled and we don't want to re-apply other things
-      // if the primary effect was 'crop'.
-      // For 'applyAll', all adjustments including crop (handled above) are applied.
+    // --- Apply other adjustments ---
+    // This block will now run for 'applyAll', 'crop' (after crop is done), or specific adjustment effects.
+    if (effect === 'applyAll' || effect === 'crop' || ['brightness', 'exposure', 'temperature', 'contrast', 'saturation', 'tint', 'sharpness'].includes(effect)) {
       
-      // Exposure
+      // Exposure (Note: Sharp's modulate brightness is multiplicative, so ensure param.brightness is handled well if both are applied)
       if (params.exposure !== undefined && params.exposure !== 0) {
+        console.log('API: Applying exposure:', params.exposure);
         pImage = pImage.modulate({ brightness: exposureToBrightnessMultiplier(params.exposure) });
       }
       // Brightness
-      if (params.brightness !== undefined && params.brightness !== 1) {
+      if (params.brightness !== undefined && params.brightness !== 1) { // Default brightness is 1
+        console.log('API: Applying brightness:', params.brightness);
+        // If exposure was also applied, this will multiply. Consider if they should be exclusive or combined differently.
         pImage = pImage.modulate({ brightness: params.brightness });
       }
       // Contrast
-      if (params.contrast !== undefined && params.contrast !== 0) {
-        const contrastValue = params.contrast;
-        const factorA = 1.0 + (contrastValue / 100.0);
-        const offsetB = 128 * (1 - factorA);
+      if (params.contrast !== undefined && params.contrast !== 0) { // Default contrast is 0
+        console.log('API: Applying contrast:', params.contrast);
+        const contrastValue = params.contrast; // Assuming -100 to 100 range
+        // A common way to apply contrast: normalize, scale, then de-normalize.
+        // Or use linear transform: factor > 1 increases contrast, < 1 decreases.
+        // factor = (100 + contrastValue) / 100
+        // For Sharp: .linear(a,b) ->  a*input + b.
+        // A simple linear scaling for contrast:
+        const factorA = 1.0 + (contrastValue / 100.0); // e.g., contrast 20 -> 1.2, contrast -20 -> 0.8
+        const offsetB = 128 * (1 - factorA); // To keep mid-tones roughly the same
         pImage = pImage.linear(factorA, offsetB);
       }
       // Temperature
       if (params.temperature !== undefined && params.temperature !== 0) {
+        console.log('API: Applying temperature:', params.temperature);
         const tempTintColor = temperatureToRgbTint(params.temperature);
         if (tempTintColor) pImage = pImage.tint(tempTintColor);
       }
       // Saturation
-      if (params.saturation !== undefined && params.saturation !== 1.0) {
-        const saturationValue = Math.max(0, params.saturation);
+      if (params.saturation !== undefined && params.saturation !== 1.0) { // Default saturation is 1
+        console.log('API: Applying saturation:', params.saturation);
+        const saturationValue = Math.max(0, params.saturation); // Ensure non-negative
         pImage = pImage.modulate({ saturation: saturationValue });
       }
       // Tint
       if (params.tint !== undefined && params.tint !== 0) {
+        console.log('API: Applying tint:', params.tint);
         const greenMagentaTintColor = greenMagentaTintToRgb(params.tint);
         if (greenMagentaTintColor) pImage = pImage.tint(greenMagentaTintColor);
       }
       // Sharpness
-      if (params.sharpness !== undefined && params.sharpness > 0) {
-        const sharpnessFactor = params.sharpness / 100.0;
-        const sigma = 0.3 + (sharpnessFactor * 1.7);
+      if (params.sharpness !== undefined && params.sharpness > 0) { // Apply only if sharpness > 0
+        console.log('API: Applying sharpness:', params.sharpness);
+        // Sigma calculation can be tuned. Example:
+        const sharpnessFactor = params.sharpness / 100.0; // Normalize 0-100 to 0-1
+        const sigma = 0.3 + (sharpnessFactor * 1.7); // Map to a reasonable sigma range (e.g., 0.3 to 2.0)
+        // You might also want to control flat/jagged parameters of sharpen
         pImage = pImage.sharpen({ sigma });
       }
-    } else if (effect === 'resize') { 
+    }
+    
+    // Specific named effects that might be exclusive or applied differently
+    if (effect === 'grayscale') {
+      console.log('API: Applying grayscale');
+      pImage = pImage.grayscale();
+    } else if (effect === 'resize') {
       if (params.width || params.height) {
+        console.log('API: Applying resize:', { width: params.width, height: params.height });
         pImage = pImage.resize(
           typeof params.width === 'number' ? params.width : undefined,
           typeof params.height === 'number' ? params.height : undefined
+          // Consider adding options like fit, kernel, etc.
         );
       }
     }
+    // Note: If 'grayscale' is an effect, and it's part of an 'applyAll' or 'crop' that also has color adjustments,
+    // the order matters. Grayscale will remove color information. Typically, grayscale is an exclusive effect.
+    // The current structure implies if effect is 'grayscale', other color adjustments might not apply unless
+    // it's also part of the 'applyAll' condition. The frontend sends specific effect types.
 
-    const outputFormat = 'png';
+    const outputFormat = 'png'; // Or 'jpeg' based on file.type or a quality setting
     const mimeType = `image/${outputFormat}`;
     const outputBuffer: Buffer = await pImage
-      .toFormat(outputFormat as keyof sharp.FormatEnum) // Ensure format is valid for Sharp
+      .toFormat(outputFormat as keyof sharp.FormatEnum)
       .toBuffer();
 
-    const finalMetadata = await sharp(outputBuffer).metadata(); // Get metadata of the FINAL buffer
+    const finalMetadata = await sharp(outputBuffer).metadata();
     console.log('API: Final output buffer metadata:', { width: finalMetadata.width, height: finalMetadata.height, size: outputBuffer.length });
-
 
     return new Response(outputBuffer, {
       status: 200,

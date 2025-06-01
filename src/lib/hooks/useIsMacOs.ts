@@ -1,3 +1,4 @@
+// lib/hooks/useIsMacOs.ts
 "use client";
 
 import { useEffect, useState } from 'react';

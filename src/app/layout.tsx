@@ -8,7 +8,7 @@ import { ThemeProvider } from "@/components/custom/ThemeProvider";
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "QuikLens - Image Editor",
+  title: "QuikLens - Image Editor", // Updated project name in title
   description: "A lightweight image editor in your browser.",
 };
 
