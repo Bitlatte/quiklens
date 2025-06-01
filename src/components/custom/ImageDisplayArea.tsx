@@ -245,7 +245,7 @@ export function ImageDisplayArea({ originalImagePreviewFromStore, imageDisplayKe
       )}
       <canvas
         ref={canvasRef}
-        className={`shadow-xl ${(!displayUrl || !hasSelectedFile || (isLoading && !displayUrl)) ? 'hidden' : ''}`}
+        className={`${(!displayUrl || !hasSelectedFile || (isLoading && !displayUrl)) ? 'hidden' : ''}`}
         onWheel={hasSelectedFile ? handleWheel : undefined}
         onMouseDown={hasSelectedFile ? handleCanvasMouseDown : undefined}
         onMouseMove={hasSelectedFile ? handleCanvasMouseMove : undefined}
