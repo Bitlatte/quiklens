@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { FileDown, FileImage, Undo2, Redo2 } from 'lucide-react';
-import { ModeToggle } from './ModeToggle';
+import { ModeToggle } from '@/components/custom/ModeToggle';
 import { globalShortcutConfig, ShortcutConfigItem } from '@/lib/shortcuts'; // Import shortcut config
 import { useIsMacOs } from '@/lib/os-utils'; // Import OS detection utility
 
