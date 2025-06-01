@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { FileDown, FileImage, Undo2, Redo2 } from 'lucide-react';
+import { ModeToggle } from './ModeToggle';
 import { globalShortcutConfig, ShortcutConfigItem } from '@/lib/shortcuts'; // Import shortcut config
 import { useIsMacOs } from '@/lib/os-utils'; // Import OS detection utility
 
@@ -100,6 +101,10 @@ export function TopBar({ onOpenFileClick, onExportClick, onUndo, onRedo, canUndo
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+      </div>
+
+      <div className="flex ml-auto gap-2">
+        <ModeToggle />
       </div>
     </header>
   );
