@@ -46,7 +46,7 @@ export default function EditorLayout() {
   const [currentBaseImagePreviewUrl, setCurrentBaseImagePreviewUrl] = useState<string | null>(null); 
   const [currentBaseImageDimensions, setCurrentBaseImageDimensions] = useState<{width: number, height: number} | null>(null);
   const [trueOriginalImageDimensions, setTrueOriginalImageDimensions] = useState<{width: number, height: number} | null>(null);
-  const [processedNonCropImageUrl, setProcessedNonCropImageUrl] = useState<string | null>(null);
+  // processedNonCropImageUrl is removed. currentBaseImagePreviewUrl will always be the latest state.
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,9 +69,13 @@ export default function EditorLayout() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const getCurrentAdjustmentsSnapshot = useCallback((): Omit<ImageProcessingParams, 'crop' | '_sourceImageDimensionsForNextStep' | '_appliedCropForThisState'> => {
-    return { brightness, exposure, temperature, contrast, saturation, tint, sharpness };
-  }, [brightness, exposure, temperature, contrast, saturation, tint, sharpness]);
+  const getCurrentParamsSnapshot = useCallback((): ImageProcessingParams => {
+    return { 
+      brightness, exposure, temperature, contrast, saturation, tint, sharpness,
+      crop: appliedCropRegionToOriginal || undefined,
+      // Internal history metadata will be added by addHistoryEntry
+    };
+  }, [brightness, exposure, temperature, contrast, saturation, tint, sharpness, appliedCropRegionToOriginal]);
 
   const applyParamsFromHistorySnapshot = useCallback((params: ImageProcessingParams) => {
     console.log("[EditorLayout] applyParamsFromHistorySnapshot with:", params);
@@ -82,9 +86,9 @@ export default function EditorLayout() {
     setSaturation(params.saturation ?? 1);
     setTint(params.tint ?? 0);
     setSharpness(params.sharpness ?? 0);
-    
     setAppliedCropRegionToOriginal(params.crop || null); 
     
+    // Base dimensions are determined by the crop in the restored state
     if (params.crop) {
         setCurrentBaseImageDimensions({width: params.crop.width, height: params.crop.height});
     } else if (trueOriginalImageDimensions) {
@@ -95,7 +99,7 @@ export default function EditorLayout() {
         setUiCropRegion(
             params.crop 
             ? { left: 0, top: 0, width: params.crop.width, height: params.crop.height }
-            : { left:0, top: 0, width: currentBaseImageDimensions.width, height: currentBaseImageDimensions.height }
+            : (currentBaseImageDimensions ? { left:0, top: 0, width: currentBaseImageDimensions.width, height: currentBaseImageDimensions.height } : null)
         );
     }
   }, [isCropping, currentBaseImageDimensions, trueOriginalImageDimensions]);
@@ -104,14 +108,13 @@ export default function EditorLayout() {
     const defaultParams: ImageProcessingParams = {
       brightness: 1, exposure: 0, temperature: 0, contrast: 0,
       saturation: 1, tint: 0, sharpness: 0, crop: undefined,
-      // _sourceImageDimensionsForNextStep and _appliedCropForThisState will be set based on newFile
     };
     
     setIsCropping(false);
     setCurrentAspectRatio("freeform");
     setUiCropRegion(null);
     setError(null);
-    setProcessedNonCropImageUrl(null);
+    // setProcessedNonCropImageUrl(null); // Removed
 
     if (newFile) {
         const objectURL = URL.createObjectURL(newFile);
@@ -123,10 +126,10 @@ export default function EditorLayout() {
             setCurrentBaseImageDimensions(dims);
             const initialHistoryEntry: ImageProcessingParams = {
                 ...defaultParams,
-                _sourceImageDimensionsForNextStep: dims,
-                _appliedCropForThisState: null,
+                _sourceImageDimensionsForNextStep: dims, // Base for the initial state
+                _appliedCropForThisState: null, // No crop initially
             };
-            applyParamsFromHistorySnapshot(initialHistoryEntry); // Apply defaults considering new dims
+            applyParamsFromHistorySnapshot(initialHistoryEntry); 
             setHistory([initialHistoryEntry]);
             setCurrentHistoryIndex(0);
         };
@@ -136,45 +139,39 @@ export default function EditorLayout() {
         setTrueOriginalImageDimensions(null);
         setCurrentBaseImageDimensions(null);
         applyParamsFromHistorySnapshot(defaultParams);
-        setHistory([defaultParams]);
+        setHistory([defaultParams]); // Should have _sourceImageDimensionsForNextStep: null
         setCurrentHistoryIndex(0);
     }
     setImageDisplayKeySuffix(prev => prev + 1);
   }, [applyParamsFromHistorySnapshot]);
 
-
   useEffect(() => {
     return () => {
       if (currentBaseImagePreviewUrl) URL.revokeObjectURL(currentBaseImagePreviewUrl);
-      if (processedNonCropImageUrl) URL.revokeObjectURL(processedNonCropImageUrl);
+      // if (processedNonCropImageUrl) URL.revokeObjectURL(processedNonCropImageUrl); // Removed
     };
-  }, [currentBaseImagePreviewUrl, processedNonCropImageUrl]);
+  }, [currentBaseImagePreviewUrl]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
       setSelectedFile(file);
       if (currentBaseImagePreviewUrl) URL.revokeObjectURL(currentBaseImagePreviewUrl);
-      if (processedNonCropImageUrl) URL.revokeObjectURL(processedNonCropImageUrl);
+      // if (processedNonCropImageUrl) URL.revokeObjectURL(processedNonCropImageUrl); // Removed
       resetApplicationState(file);
     }
   };
 
   const handleOpenFileClick = useCallback(() => { fileInputRef.current?.click(); }, []);
   
-  const handleExportClick = useCallback(() => {
-    const urlToDownload = processedNonCropImageUrl || currentBaseImagePreviewUrl;
-    const isTrulyOriginal = currentBaseImagePreviewUrl && trueOriginalImageDimensions && 
-                           currentBaseImageDimensions?.width === trueOriginalImageDimensions.width &&
-                           currentBaseImageDimensions?.height === trueOriginalImageDimensions.height &&
-                           !appliedCropRegionToOriginal && !processedNonCropImageUrl;
-    let fileNameSuffix = "";
-    if (processedNonCropImageUrl || appliedCropRegionToOriginal) {
-        fileNameSuffix = '_edited';
-    } else if (currentBaseImagePreviewUrl && !isTrulyOriginal) {
-        fileNameSuffix = '_base';
-    } else if (isTrulyOriginal) {
-        fileNameSuffix = '_original';
+  const handleExportClick = useCallback(() => { 
+    const urlToDownload = currentBaseImagePreviewUrl; // Always export the current view
+    let fileNameSuffix = "_edited"; // Assume edited if a file is loaded
+    const currentSliders = getCurrentParamsSnapshot();
+    const defaultSliders = { brightness: 1, exposure: 0, temperature: 0, contrast: 0, saturation: 1, tint: 0, sharpness: 0 };
+
+    if (!appliedCropRegionToOriginal && currentHistoryIndex <= 0 && JSON.stringify(currentSliders) === JSON.stringify(defaultSliders) ) {
+        fileNameSuffix = "_original"; // If it's the very first state and no changes
     }
 
     if (urlToDownload) {
@@ -189,16 +186,15 @@ export default function EditorLayout() {
     } else {
       alert('Please open an image to export.');
     }
-  }, [processedNonCropImageUrl, currentBaseImagePreviewUrl, selectedFile, trueOriginalImageDimensions, currentBaseImageDimensions, appliedCropRegionToOriginal]);
+  }, [currentBaseImagePreviewUrl, selectedFile, appliedCropRegionToOriginal, history, currentHistoryIndex, getCurrentParamsSnapshot]);
 
-  const addHistoryEntry = useCallback((paramsForHistory: ImageProcessingParams) => {
+  const addHistoryEntry = useCallback((paramsSnapshot: ImageProcessingParams) => {
     setHistory(prevHistory => {
       const newHistoryBase = prevHistory.slice(0, currentHistoryIndex + 1);
-      // Augment with current base dimensions and applied crop for this state
       const enrichedHistoryEntry: ImageProcessingParams = {
-        ...paramsForHistory,
-        _sourceImageDimensionsForNextStep: currentBaseImageDimensions, // The dimensions this state was based on
-        _appliedCropForThisState: appliedCropRegionToOriginal, // The crop that defines this state's base
+        ...paramsSnapshot, 
+        _sourceImageDimensionsForNextStep: currentBaseImageDimensions, 
+        _appliedCropForThisState: appliedCropRegionToOriginal, 
       };
       const updatedHistory = [...newHistoryBase, enrichedHistoryEntry];
       let finalHistory = updatedHistory;
@@ -212,8 +208,8 @@ export default function EditorLayout() {
   }, [currentHistoryIndex, currentBaseImageDimensions, appliedCropRegionToOriginal]);
 
   const processImageAndSetDisplay = useCallback(async (
-    paramsForAPI: ImageProcessingParams,
-    effectToApply: ImageEffectType,
+    paramsForAPI: ImageProcessingParams, 
+    effectToApply: ImageEffectType,      
     shouldAddToHistory: boolean
   ) => {
     if (!selectedFile) { console.warn("processImageAndSetDisplay: No file"); return; }
@@ -222,11 +218,10 @@ export default function EditorLayout() {
     setIsLoading(true); setError(null);
 
     const formData = new FormData();
-    formData.append('imageFile', selectedFile);
+    formData.append('imageFile', selectedFile); 
     formData.append('effect', effectToApply);
-    // Remove internal history metadata before sending to API
     const { _sourceImageDimensionsForNextStep, _appliedCropForThisState, ...apiParams } = paramsForAPI;
-    formData.append('params', JSON.stringify(apiParams));
+    formData.append('params', JSON.stringify(apiParams)); 
 
     try {
         const response = await fetch('/api/image/process', { method: 'POST', body: formData });
@@ -238,37 +233,33 @@ export default function EditorLayout() {
         const newBlobUrl = URL.createObjectURL(imageBlob);
         console.log('[EditorLayout] processImageAndSetDisplay: API returned. New Blob URL:', newBlobUrl);
 
-        // Revoke previous URLs carefully
-        if (processedNonCropImageUrl) URL.revokeObjectURL(processedNonCropImageUrl);
-        if (currentBaseImagePreviewUrl && currentBaseImagePreviewUrl !== URL.createObjectURL(selectedFile) && currentBaseImagePreviewUrl !== newBlobUrl) {
+        if (currentBaseImagePreviewUrl && currentBaseImagePreviewUrl !== newBlobUrl) { 
             URL.revokeObjectURL(currentBaseImagePreviewUrl);
         }
         
-        let historyEntryParams = { ...paramsForAPI }; // Start with params sent to API
+        setCurrentBaseImagePreviewUrl(newBlobUrl); 
 
-        if (effectToApply === 'crop' && apiParams.crop) {
-            console.log('[EditorLayout] processImageAndSetDisplay: CROP effect applied.');
-            setCurrentBaseImagePreviewUrl(newBlobUrl);
-            const newBaseDims = { width: apiParams.crop.width, height: apiParams.crop.height };
-            setCurrentBaseImageDimensions(newBaseDims);
+        if (apiParams.crop) { 
+            setCurrentBaseImageDimensions({ width: apiParams.crop.width, height: apiParams.crop.height });
             setAppliedCropRegionToOriginal(apiParams.crop); 
-            setProcessedNonCropImageUrl(null); 
-            historyEntryParams.crop = apiParams.crop; // Ensure history reflects the applied crop
-        } else {
-            // For non-crop adjustments, the result is stored in processedNonCropImageUrl
-            // currentBaseImagePreviewUrl should point to the base this was applied on (original or last crop)
-            if (!appliedCropRegionToOriginal && trueOriginalImageDimensions) { // Sliders applied on true original
-                setCurrentBaseImagePreviewUrl(URL.createObjectURL(selectedFile));
-                setCurrentBaseImageDimensions(trueOriginalImageDimensions);
-            } // If appliedCropRegionToOriginal exists, currentBase... states are already set to that cropped version
-            setProcessedNonCropImageUrl(newBlobUrl);
-            historyEntryParams.crop = appliedCropRegionToOriginal || undefined; // Preserve existing crop in history
+        } else if (trueOriginalImageDimensions) { 
+            setCurrentBaseImageDimensions(trueOriginalImageDimensions);
+            // If no crop in API params, but a crop was previously applied, we need to ensure
+            // appliedCropRegionToOriginal is cleared if this operation implies a reset to full image.
+            // This usually happens on undo/redo to a state without crop.
+            if (effectToApply === 'applyAll' && !apiParams.crop) { // Check if this 'applyAll' means no crop
+                setAppliedCropRegionToOriginal(null);
+            }
         }
         
         setImageDisplayKeySuffix(prev => prev + 1);
 
         if (shouldAddToHistory) {
-            addHistoryEntry(historyEntryParams);
+            const snapshotAfterOperation = {
+                ...getCurrentParamsSnapshot(), // Current slider values
+                crop: apiParams.crop || appliedCropRegionToOriginal || undefined 
+            };
+            addHistoryEntry(snapshotAfterOperation);
         }
 
     } catch (err: any) {
@@ -277,33 +268,48 @@ export default function EditorLayout() {
     } finally {
         setIsLoading(false);
     }
-  }, [selectedFile, addHistoryEntry, currentBaseImagePreviewUrl, processedNonCropImageUrl, appliedCropRegionToOriginal, trueOriginalImageDimensions]);
+  }, [selectedFile, addHistoryEntry, currentBaseImagePreviewUrl, appliedCropRegionToOriginal, trueOriginalImageDimensions, getCurrentParamsSnapshot]);
 
 
   const debouncedProcessNonCropAdjustments = useCallback(
     debounce(() => {
       if (isCropping || !selectedFile) return;
       console.log("[EditorLayout] Debounced non-crop adjustment processing triggered.");
-      const sliderParams = getCurrentAdjustmentsSnapshot();
+      const sliderParams = getCurrentParamsSnapshot(); 
       const paramsForAPI: ImageProcessingParams = {
-          ...sliderParams,
-          crop: appliedCropRegionToOriginal || undefined 
+          ...sliderParams, // This already includes the current appliedCropRegionToOriginal
       };
       processImageAndSetDisplay(paramsForAPI, 'applyAll', true);
     }, DEBOUNCE_DELAY),
-    [getCurrentAdjustmentsSnapshot, appliedCropRegionToOriginal, processImageAndSetDisplay, isCropping, selectedFile]
+    [getCurrentParamsSnapshot, processImageAndSetDisplay, isCropping, selectedFile] // Removed appliedCropRegionToOriginal as it's in snapshot
   );
 
   useEffect(() => { 
     if (!selectedFile || currentHistoryIndex < 0 || isCropping) return;
-    debouncedProcessNonCropAdjustments();
-  }, [brightness, exposure, temperature, contrast, saturation, tint, sharpness]); // Only slider states
+    
+    const currentSliderVals = { brightness, exposure, temperature, contrast, saturation, tint, sharpness };
+    const historyEntry = history[currentHistoryIndex];
+    if (historyEntry) {
+        const historySliderVals = {
+            brightness: historyEntry.brightness ?? 1,
+            exposure: historyEntry.exposure ?? 0,
+            temperature: historyEntry.temperature ?? 0,
+            contrast: historyEntry.contrast ?? 0,
+            saturation: historyEntry.saturation ?? 1,
+            tint: historyEntry.tint ?? 0,
+            sharpness: historyEntry.sharpness ?? 0,
+        };
+        if (JSON.stringify(currentSliderVals) !== JSON.stringify(historySliderVals)) {
+            debouncedProcessNonCropAdjustments();
+        }
+    }
+  }, [brightness, exposure, temperature, contrast, saturation, tint, sharpness, selectedFile, currentHistoryIndex, isCropping, history, debouncedProcessNonCropAdjustments]);
 
 
   const handleUndo = useCallback(() => { 
     if (currentHistoryIndex > 0) {
       const newIndex = currentHistoryIndex - 1;
-      const paramsToRestore = history[newIndex];
+      const paramsToRestore = history[newIndex]; 
       console.log("[EditorLayout] UNDO: Restoring to history index", newIndex, "Params:", paramsToRestore);
       
       applyParamsFromHistorySnapshot(paramsToRestore); 
@@ -327,25 +333,23 @@ export default function EditorLayout() {
   }, [currentHistoryIndex, history, applyParamsFromHistorySnapshot, processImageAndSetDisplay]);
   
   const handleApplyGrayscale = useCallback(() => {
-    const currentAdjustments = getCurrentAdjustmentsSnapshot();
-    const paramsForAPI: ImageProcessingParams = {
-        ...currentAdjustments,
-        crop: appliedCropRegionToOriginal || undefined,
+    const paramsForAPI: ImageProcessingParams = { 
+        ...getCurrentParamsSnapshot(), // Includes current crop state from appliedCropRegionToOriginal
     };
     console.log("[EditorLayout] Applying Grayscale with params for API:", paramsForAPI);
     processImageAndSetDisplay(paramsForAPI, 'grayscale', true);
-  }, [getCurrentAdjustmentsSnapshot, appliedCropRegionToOriginal, processImageAndSetDisplay]);
+  }, [getCurrentParamsSnapshot, processImageAndSetDisplay]);
 
   const toggleCropMode = () => {
     setIsCropping(prevIsCropping => {
       const newIsCropping = !prevIsCropping;
       if (newIsCropping && currentBaseImageDimensions) {
-        console.log("[EditorLayout] Activating crop mode. Initializing uiCropRegion.");
-        setUiCropRegion(
-          appliedCropRegionToOriginal // If a crop is already applied to original, uiCrop should be relative to that
-          ? { left: 0, top: 0, width: currentBaseImageDimensions.width, height: currentBaseImageDimensions.height }
-          : { left: 0, top: 0, width: currentBaseImageDimensions.width, height: currentBaseImageDimensions.height }
-        );
+        console.log("[EditorLayout] Activating crop mode. Initializing uiCropRegion based on currentBaseImageDimensions.");
+        setUiCropRegion({ 
+            left: 0, top: 0, 
+            width: currentBaseImageDimensions.width, 
+            height: currentBaseImageDimensions.height 
+        });
         setCurrentAspectRatio("freeform");
       }
       return newIsCropping;
@@ -363,7 +367,6 @@ export default function EditorLayout() {
         const arValue = getAspectRatioValue(newAspectRatio);
 
         if (arValue) {
-            // Prioritize maintaining width, adjust height, then clamp if needed
             currentHeight = currentWidth / arValue;
             if (currentHeight > currentBaseImageDimensions.height - currentTop) {
                 currentHeight = currentBaseImageDimensions.height - currentTop;
@@ -373,9 +376,7 @@ export default function EditorLayout() {
                 currentWidth = currentBaseImageDimensions.width - currentLeft;
                 currentHeight = currentWidth / arValue;
             }
-
         } else if (newAspectRatio === "original" && currentBaseImageDimensions) {
-            // For "original", uiCrop should be full current base
             currentWidth = currentBaseImageDimensions.width;
             currentHeight = currentBaseImageDimensions.height;
             currentLeft = 0; 
@@ -387,9 +388,8 @@ export default function EditorLayout() {
         currentWidth = Math.max(MIN_CROP_SIZE, Math.min(currentWidth, currentBaseImageDimensions.width - currentLeft));
         currentHeight = Math.max(MIN_CROP_SIZE, Math.min(currentHeight, currentBaseImageDimensions.height - currentTop));
         
-        // Final check and adjustment for aspect ratio after clamping
         if (arValue) {
-            if (Math.abs(currentWidth / currentHeight - arValue) > 0.001) {
+            if (Math.abs(currentWidth / currentHeight - arValue) > 0.001) { 
                 if (currentWidth / arValue <= currentBaseImageDimensions.height - currentTop) {
                     currentHeight = currentWidth / arValue;
                 } else {
@@ -397,6 +397,8 @@ export default function EditorLayout() {
                 }
             }
         }
+        currentWidth = Math.max(MIN_CROP_SIZE, Math.min(currentWidth, currentBaseImageDimensions.width - currentLeft));
+        currentHeight = Math.max(MIN_CROP_SIZE, Math.min(currentHeight, currentBaseImageDimensions.height - currentTop));
         setUiCropRegion({ left: currentLeft, top: currentTop, width: Math.round(currentWidth), height: Math.round(currentHeight) });
     }
 };
@@ -441,7 +443,7 @@ export default function EditorLayout() {
     console.log("[EditorLayout] Applying crop action. UI Crop (rel to current base):", uiCropRegion, "Final API Crop (rel to true original):", finalCropForApi);
     
     const paramsForProcessing: ImageProcessingParams = {
-        brightness, exposure, temperature, contrast, saturation, tint, sharpness,
+        ...getCurrentParamsSnapshot(), 
         crop: finalCropForApi,       
     };
     
@@ -487,7 +489,7 @@ export default function EditorLayout() {
 
   const canUndo = currentHistoryIndex > 0;
   const canRedo = currentHistoryIndex < history.length - 1;
-  const canExport = !!(processedNonCropImageUrl || currentBaseImagePreviewUrl);
+  const canExport = !!(currentBaseImagePreviewUrl);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-muted/20">
@@ -501,7 +503,7 @@ export default function EditorLayout() {
         <ImageDisplayArea
           key={`image-display-${currentBaseImagePreviewUrl}-${imageDisplayKeySuffix}`} 
           originalImagePreview={currentBaseImagePreviewUrl}
-          processedImageUrl={processedNonCropImageUrl}
+          processedImageUrl={null} // Simplified: ImageDisplayArea always shows currentBaseImagePreviewUrl
           isLoading={isLoading}
           hasSelectedFile={!!selectedFile}
           isCropping={isCropping}
