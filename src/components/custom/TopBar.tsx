@@ -2,6 +2,7 @@
 "use client";
 
 import React from 'react';
+import Image from 'next/image';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -42,7 +43,8 @@ export function TopBar({ onOpenFileClick, onExportClick }: TopBarProps) {
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background p-4 sm:static sm:h-auto sm:border-0 sm:bg-transparent sm:p-6">
       <div className="flex items-center gap-2">
-        <h1 className="text-xl font-semibold">QuikLens</h1>
+        <Image src="/QuikLens.svg" alt="QuikLens" width={40} height={40} />
+        <h1 className="text-3xl font-semibold">QuikLens</h1>
       </div>
 
       <div className="flex items-center gap-2">
