@@ -94,19 +94,22 @@ export function AdjustmentSlider({
         <Label htmlFor={id} className="text-xs">
           {label}
         </Label>
-        <Input
-          type="number"
-          id={`${id}-input`}
-          value={inputValue}
-          onChange={handleInputChange}
-          onBlur={handleInputBlur}
-          onKeyDown={handleInputKeyDown}
-          min={min}
-          max={max}
-          step={step}
-          disabled={disabled}
-          className="h-7 w-14 text-xs px-2 py-1 text-right" // Adjusted styling
-        />
+        <div className="flex items-center">
+          <Input
+            type="number"
+            id={`${id}-input`}
+            value={inputValue}
+            onChange={handleInputChange}
+            onBlur={handleInputBlur}
+            onKeyDown={handleInputKeyDown}
+            min={min}
+            max={max}
+            step={step}
+            disabled={disabled}
+            className="h-7 w-14 text-xs px-2 py-1 text-right" // Adjusted styling
+          />
+          {unit && <span className="ml-1 text-xs text-muted-foreground">{unit}</span>}
+        </div>
       </div>
       <Slider
         id={id}

@@ -1,7 +1,7 @@
 // components/layouts/EditorLayout.tsx
 "use client";
 
-import React, { useRef, useCallback, ChangeEvent, useMemo } from 'react'; // useEffect removed
+import React, { useRef, useCallback, ChangeEvent } from 'react'; // useEffect removed
 import { useHotkeys } from 'react-hotkeys-hook'; // Import useHotkeys
 import { useEditorStore } from '@/lib/store';
 import { TopBar } from '@/components/custom/TopBar';
@@ -57,16 +57,6 @@ export default function EditorLayout() {
     link.click();
     document.body.removeChild(link);
   }, []);
-
-
-  const actionMapForShortcuts = useMemo(() => ({
-    undo: storeUndo,
-    redo: storeRedo,
-    openFile: handleOpenFileClick,
-    exportFile: handleExportClick,
-    applyCrop: storeApplyCrop,
-    cancelCrop: storeToggleCropMode,
-  }), [storeUndo, storeRedo, handleOpenFileClick, handleExportClick, storeApplyCrop, storeToggleCropMode]);
 
   useHotkeys('mod+o', (event) => { event.preventDefault(); handleOpenFileClick(); }, { enableOnFormTags: false }, [handleOpenFileClick]);
   useHotkeys('mod+shift+e', (event) => {

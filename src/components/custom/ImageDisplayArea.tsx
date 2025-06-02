@@ -1,8 +1,7 @@
 // components/custom/ImageDisplayArea.tsx
 "use client";
 
-import React, { useRef, useEffect, useState, useCallback, MouseEvent as ReactMouseEvent } from 'react';
-import type { CropRegion, AspectRatioOption } from '@/lib/types';
+import React, { useRef, useEffect, useState, MouseEvent as ReactMouseEvent } from 'react';
 import { useImageZoomPan } from '@/lib/hooks/useImageZoomPan';
 import { useImageCropHandler } from '@/lib/hooks/useImageCropHandler';
 import { useEditorStore } from '@/lib/store'; // Import the Zustand store
@@ -70,7 +69,7 @@ export function ImageDisplayArea({ originalImagePreviewFromStore, imageDisplayKe
     const containerElement = containerRef.current;
     if (!containerElement) return;
     const observer = new ResizeObserver(entries => {
-      for (let entry of entries) {
+      for (const entry of entries) {
         const { width, height } = entry.contentRect;
         setContainerDims({ width, height });
       }
@@ -240,7 +239,7 @@ export function ImageDisplayArea({ originalImagePreviewFromStore, imageDisplayKe
       {!isLoading && !hasSelectedFile && (
         <div className="text-center text-muted-foreground">
           <h2 className="text-2xl font-semibold mb-3">Welcome to QuikLens</h2>
-          <p>Click "Open Image" from the File menu to begin editing.</p>
+          <p>{'Click "Open Image" from the File menu to begin editing.'}</p>
         </div>
       )}
       <canvas

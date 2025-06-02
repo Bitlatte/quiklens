@@ -44,7 +44,7 @@ export async function POST(request: NextRequest): Promise<NextResponse | Respons
     let params: ImageProcessingParams = {};
     if (paramsString) {
       try { params = JSON.parse(paramsString); }
-      catch (e) { console.warn("API: Could not parse params JSON:", paramsString); }
+      catch { console.warn("API: Could not parse params JSON:", paramsString); }
     }
 
     if (!file) return NextResponse.json({ error: 'No image file provided.' } as ProcessImageResponse, { status: 400 });
@@ -71,9 +71,10 @@ export async function POST(request: NextRequest): Promise<NextResponse | Respons
                 pImage = pImage.extract(params.crop as Region);
                 const metadataAfterCrop: Metadata = await pImage.metadata(); // Get new metadata after extract
                 console.log('API: Metadata AFTER CROP extraction:', { width: metadataAfterCrop.width, height: metadataAfterCrop.height });
-            } catch (cropError: any) {
-                console.error("API: Error during pImage.extract():", cropError.message);
-                return NextResponse.json({ error: 'Failed during crop extraction.', details: cropError.message } as ProcessImageResponse, { status: 500 });
+            } catch (cropError: unknown) {
+                const message = cropError instanceof Error ? cropError.message : String(cropError);
+                console.error("API: Error during pImage.extract():", message);
+                return NextResponse.json({ error: 'Failed during crop extraction.', details: message } as ProcessImageResponse, { status: 500 });
             }
         } else {
             console.warn('API: Invalid or out-of-bounds crop parameters received, skipping crop:', params.crop, "Original Dims:", initialMetadata);
@@ -174,10 +175,11 @@ export async function POST(request: NextRequest): Promise<NextResponse | Respons
       },
     });
 
-  } catch (error: any) {
-    console.error('API: Processing API error:', error);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('API: Processing API error:', message);
     return NextResponse.json(
-      { error: 'Error processing image.', details: error.message || String(error) } as ProcessImageResponse,
+      { error: 'Error processing image.', details: message } as ProcessImageResponse,
       { status: 500 }
     );
   }

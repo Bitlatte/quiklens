@@ -23,7 +23,7 @@ import { ASPECT_RATIO_OPTIONS, AspectRatioOption } from '@/lib/types';
 import { useEditorStore } from '@/lib/store'; // Import the Zustand store
 
 // Removed all props that will now come from the store
-interface AdjustmentSidebarProps {}
+type AdjustmentSidebarProps = Record<string, never>;
 
 export function AdjustmentSidebar({}: AdjustmentSidebarProps) {
   // Select state from the store

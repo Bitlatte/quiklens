@@ -6,11 +6,15 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-// --- Helper: Debounce ---
-// Moved from store.ts
-export function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
+// Using `unknown[]` for args type as it's more type-safe than `any[]` for generic utilities.
+// The primary goal is to capture the parameters of T.
+export function debounce<T extends (...args: unknown[]) => void>(
+  func: T, 
+  waitFor: number
+): (...args: Parameters<T>) => void {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  return (...args: Parameters<F>): void => { // Adjusted return to void as original, or Promise if it should return one
+  
+  return (...args: Parameters<T>): void => {
     if (timeoutId !== null) clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
       timeoutId = null;

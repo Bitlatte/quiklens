@@ -156,7 +156,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     const formData = new FormData();
     formData.append('imageFile', selectedFile);
     formData.append('effect', effectForAPI);
-    const { _sourceImageDimensionsForNextStep, _appliedCropForThisState, ...apiParamsClean } = paramsForAPI;
+    const { ...apiParamsClean } = paramsForAPI;
     formData.append('params', JSON.stringify(apiParamsClean));
 
     try {
@@ -194,9 +194,10 @@ export const useEditorStore = create<EditorState>((set, get) => {
       if (shouldAddToHistory) {
         _addProcessedStateToHistory(paramsForAPI);
       }
-    } catch (err: any) {
-      console.error('[Store] _executeApiProcessing: Error:', err);
-      set({ error: err.message || 'An unknown error occurred.' });
+    } catch (err: unknown) { // Changed 'any' to 'unknown'
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[Store] _executeApiProcessing: Error:', message);
+      set({ error: message || 'An unknown error occurred.' });
     } finally {
       set({ isLoading: false });
     }
