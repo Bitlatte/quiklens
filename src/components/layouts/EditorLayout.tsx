@@ -16,8 +16,6 @@ export default function EditorLayout() {
   const selectedFile = useEditorStore(state => state.selectedFile);
   const currentBaseImagePreviewUrl = useEditorStore(state => state.currentBaseImagePreviewUrl);
   const imageDisplayKeySuffix = useEditorStore(state => state.imageDisplayKeySuffix);
-  // appliedCropRegionToOriginal is no longer needed to be selected here for export logic,
-  // as isPristineState selector will handle it.
 
   const storeSetSelectedFile = useEditorStore(state => state.setSelectedFile);
   const storeSetError = useEditorStore(state => state.setError);
@@ -36,22 +34,19 @@ export default function EditorLayout() {
   }, []);
 
   const handleExportClick = useCallback(() => {
-    const storeState = useEditorStore.getState(); // Get current state once
+    const storeState = useEditorStore.getState();
     if (!storeState.canExport() || !storeState.currentBaseImagePreviewUrl) {
       alert('No image to export or image is still processing.');
       return;
     }
-
     let fileNameSuffix = "_edited";
-    // Use the new selector from the store
     if (storeState.isPristineState()) {
       fileNameSuffix = "_original";
     }
-
     const link = document.createElement('a');
     link.href = storeState.currentBaseImagePreviewUrl;
     const baseName = storeState.selectedFile?.name.substring(0, storeState.selectedFile.name.lastIndexOf('.')) || 'image';
-    const downloadExtension = storeState.selectedFile?.type === 'image/jpeg' ? 'jpg' : 'png';
+    const downloadExtension = storeState.selectedFile?.type === 'image/jpeg' ? 'jpg' : 'png'; // Simplistic
     link.download = `QuikLens${fileNameSuffix}_${baseName}.${downloadExtension}`;
     document.body.appendChild(link);
     link.click();
@@ -72,13 +67,12 @@ export default function EditorLayout() {
       <TopBar
         onOpenFileClick={handleOpenFileClick}
         onExportClick={handleExportClick}
-        // Undo/redo and their states are now handled directly in TopBar from the store
       />
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileChange}
-        accept="image/*,.cr2,.nef,.arw,.dng"
+        accept="image/jpeg,image/png,image/webp,.dng,.cr2,.cr3,.nef,.arw,.orf,.raf,.rw2,.pef,.srw"
         className="hidden"
       />
       <div className="flex flex-1 overflow-hidden">

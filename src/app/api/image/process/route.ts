@@ -1,40 +1,37 @@
 // app/api/image/process/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import sharp, { Sharp, Region, Metadata } from 'sharp';
+import sharp, { Region, Metadata } from 'sharp';
 import type { ImageProcessingParams, ImageEffectType, ProcessImageResponse } from '@/lib/types';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
-// Helper functions (exposureToBrightnessMultiplier, temperatureToRgbTint, greenMagentaTintToRgb)
+const execFileAsync = promisify(execFile);
+
 function exposureToBrightnessMultiplier(ev: number): number { return Math.pow(2, ev); }
-
-function temperatureToRgbTint(temp: number): { r: number; g: number; b: number } | null {
+function temperatureToRgbTint(temp: number): { r: number; g: number; b: number } | null { /* ... */ 
   if (temp === 0) return null;
   const intensity = Math.abs(temp) / 100.0;
   let r = 255, g = 255, b = 255;
-  if (temp > 0) { // Warmer
-    b = Math.max(0, 255 - Math.floor(200 * intensity));
-    g = Math.max(0, 255 - Math.floor(50 * intensity));
-  } else { // Cooler
-    r = Math.max(0, 255 - Math.floor(200 * intensity));
-    g = Math.max(0, 255 - Math.floor(50 * intensity));
-  }
+  if (temp > 0) { b = Math.max(0, 255 - Math.floor(200 * intensity)); g = Math.max(0, 255 - Math.floor(50 * intensity)); }
+  else { r = Math.max(0, 255 - Math.floor(200 * intensity)); g = Math.max(0, 255 - Math.floor(50 * intensity)); }
   return { r, g, b };
 }
-
-function greenMagentaTintToRgb(tintValue: number): { r: number; g: number; b: number } | null {
+function greenMagentaTintToRgb(tintValue: number): { r: number; g: number; b: number } | null { /* ... */ 
   if (tintValue === 0) return null;
   const intensity = Math.abs(tintValue) / 100.0;
   let r = 255, g = 255, b = 255;
-  if (tintValue > 0) { // Magenta tint
-    g = Math.max(0, Math.floor(255 * (1 - (intensity * 0.65))));
-  } else { // Green tint
-    const rbComponent = Math.max(0, Math.floor(255 * (1 - (intensity * 0.65))));
-    r = rbComponent;
-    b = rbComponent;
-  }
+  if (tintValue > 0) { g = Math.max(0, Math.floor(255 * (1 - (intensity * 0.65)))); }
+  else { const rb = Math.max(0, Math.floor(255 * (1 - (intensity * 0.65)))); r = rb; b = rb; }
   return { r, g, b };
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse | Response> {
+  let tempRawInputPath: string | undefined;
+  let tempTiffOutputPathFromRaw: string | undefined;
+
   try {
     const formData = await request.formData();
     const file = formData.get('imageFile') as File | null;
@@ -43,144 +40,151 @@ export async function POST(request: NextRequest): Promise<NextResponse | Respons
 
     let params: ImageProcessingParams = {};
     if (paramsString) {
-      try { params = JSON.parse(paramsString); }
-      catch { console.warn("API: Could not parse params JSON:", paramsString); }
+      try { params = JSON.parse(paramsString); } 
+      catch { console.warn("[API /process] Could not parse params JSON:", paramsString); }
     }
 
     if (!file) return NextResponse.json({ error: 'No image file provided.' } as ProcessImageResponse, { status: 400 });
     if (!effect) return NextResponse.json({ error: 'No effect specified.' } as ProcessImageResponse, { status: 400 });
 
+    console.log(`[API /process] Received effect: ${effect} for file: ${file.name}, params:`, params);
+
     const imageBuffer = Buffer.from(await file.arrayBuffer());
-    let pImage: Sharp = sharp(imageBuffer);
+    let sourceForSharp: string | Buffer = imageBuffer;
 
-    console.log(`API: Processing effect: ${effect} with params:`, params);
+    const rawExtensions = /\.(cr2|cr3|nef|arw|orf|raf|rw2|pef|srw|dng)$/i;
+    const isRawFile = rawExtensions.test(file.name);
 
-    const initialMetadata: Metadata = await pImage.metadata();
-    console.log('API: Initial image metadata:', { width: initialMetadata.width, height: initialMetadata.height, format: initialMetadata.format });
+    if (isRawFile) {
+      console.log(`[API /process] RAW file detected: ${file.name}. Pre-processing with dcraw_emu.`);
+      const uniqueId = Date.now() + "_" + Math.random().toString(36).substring(2, 10);
+      tempRawInputPath = path.join(os.tmpdir(), `process_raw_input_${uniqueId}_${file.name}`);
+      tempTiffOutputPathFromRaw = tempRawInputPath + ".tiff";
 
-    // --- Apply Crop First if specified in params, regardless of the main 'effect' type, if params.crop exists ---
-    // This ensures crop is always from the original if a crop region is provided.
+      await fs.writeFile(tempRawInputPath, imageBuffer);
+      console.log(`[API /process] Temporary RAW file written: ${tempRawInputPath}`);
+
+      console.log(`[API /process] Executing: dcraw_emu -w -T "${tempRawInputPath}" (output expected: ${tempTiffOutputPathFromRaw})`);
+      const { stdout, stderr } = await execFileAsync('dcraw_emu', ['-w', '-T', tempRawInputPath]);
+      
+      if (stderr && stderr.trim() !== "") console.warn(`[API /process] dcraw_emu stderr: ${stderr.trim()}`);
+      if (stdout && stdout.trim() !== "") console.log(`[API /process] dcraw_emu stdout: ${stdout.trim()}`);
+
+      try {
+        await fs.access(tempTiffOutputPathFromRaw);
+        console.log(`[API /process] dcraw_emu converted RAW to TIFF: ${tempTiffOutputPathFromRaw}`);
+        sourceForSharp = tempTiffOutputPathFromRaw;
+      } catch (tiffError) {
+        console.error(`[API /process] dcraw_emu TIFF output file not found at ${tempTiffOutputPathFromRaw}. Error:`, tiffError);
+        throw new Error(`dcraw_emu failed to produce TIFF. Stderr: ${stderr}`);
+      }
+    } else {
+      console.log(`[API /process] Standard image file detected: ${file.name}. Processing directly.`);
+    }
+    
+    let pImageWorkingInstance = sharp(sourceForSharp)
+        .rotate(); // Apply EXIF rotation immediately after loading
+
+    // Get metadata *after* applying .rotate()
+    const orientedMetadata: Metadata = await pImageWorkingInstance.metadata();
+    console.log('[API /process] Metadata for sharp processing (post-orientation):', { 
+        width: orientedMetadata.width, 
+        height: orientedMetadata.height, 
+        format: orientedMetadata.format,
+        orientation: orientedMetadata.orientation 
+    });
+
+    // All subsequent operations (crop, adjustments) will use pImageWorkingInstance
     if (params.crop) {
         const { left, top, width, height } = params.crop;
+        // Validate crop dimensions against the (now correctly oriented) metadata
         if (width > 0 && height > 0 && left >= 0 && top >= 0 &&
-            left + width <= (initialMetadata.width || Infinity) &&
-            top + height <= (initialMetadata.height || Infinity)
+            orientedMetadata.width && left + width <= orientedMetadata.width &&
+            orientedMetadata.height && top + height <= orientedMetadata.height
         ) {
-            console.log('API: Applying crop region from params:', params.crop);
+            console.log('[API /process] Applying crop region to oriented image:', params.crop);
             try {
-                pImage = pImage.extract(params.crop as Region);
-                const metadataAfterCrop: Metadata = await pImage.metadata(); // Get new metadata after extract
-                console.log('API: Metadata AFTER CROP extraction:', { width: metadataAfterCrop.width, height: metadataAfterCrop.height });
+                pImageWorkingInstance = pImageWorkingInstance.extract(params.crop as Region);
             } catch (cropError: unknown) {
                 const message = cropError instanceof Error ? cropError.message : String(cropError);
-                console.error("API: Error during pImage.extract():", message);
+                console.error("[API /process] Error during pImage.extract():", message);
                 return NextResponse.json({ error: 'Failed during crop extraction.', details: message } as ProcessImageResponse, { status: 500 });
             }
         } else {
-            console.warn('API: Invalid or out-of-bounds crop parameters received, skipping crop:', params.crop, "Original Dims:", initialMetadata);
-            // If crop is invalid, we proceed with the uncropped image (or previously cropped if chaining correctly)
+            console.warn('[API /process] Invalid or out-of-bounds crop parameters for current image, skipping crop:', params.crop, "Oriented Image Dims:", {w: orientedMetadata.width, h: orientedMetadata.height});
         }
     }
 
-    // --- Apply other adjustments ---
-    // This block will now run for 'applyAll', 'crop' (after crop is done), or specific adjustment effects.
+    // Apply adjustments to the (potentially cropped and already oriented) image
     if (effect === 'applyAll' || effect === 'crop' || ['brightness', 'exposure', 'temperature', 'contrast', 'saturation', 'tint', 'sharpness'].includes(effect)) {
-      
-      // Exposure (Note: Sharp's modulate brightness is multiplicative, so ensure param.brightness is handled well if both are applied)
       if (params.exposure !== undefined && params.exposure !== 0) {
-        console.log('API: Applying exposure:', params.exposure);
-        pImage = pImage.modulate({ brightness: exposureToBrightnessMultiplier(params.exposure) });
+        pImageWorkingInstance = pImageWorkingInstance.modulate({ brightness: exposureToBrightnessMultiplier(params.exposure) });
       }
-      // Brightness
-      if (params.brightness !== undefined && params.brightness !== 1) { // Default brightness is 1
-        console.log('API: Applying brightness:', params.brightness);
-        // If exposure was also applied, this will multiply. Consider if they should be exclusive or combined differently.
-        pImage = pImage.modulate({ brightness: params.brightness });
+      if (params.brightness !== undefined && params.brightness !== 1) {
+        pImageWorkingInstance = pImageWorkingInstance.modulate({ brightness: params.brightness });
       }
-      // Contrast
-      if (params.contrast !== undefined && params.contrast !== 0) { // Default contrast is 0
-        console.log('API: Applying contrast:', params.contrast);
-        const contrastValue = params.contrast; // Assuming -100 to 100 range
-        // A common way to apply contrast: normalize, scale, then de-normalize.
-        // Or use linear transform: factor > 1 increases contrast, < 1 decreases.
-        // factor = (100 + contrastValue) / 100
-        // For Sharp: .linear(a,b) ->  a*input + b.
-        // A simple linear scaling for contrast:
-        const factorA = 1.0 + (contrastValue / 100.0); // e.g., contrast 20 -> 1.2, contrast -20 -> 0.8
-        const offsetB = 128 * (1 - factorA); // To keep mid-tones roughly the same
-        pImage = pImage.linear(factorA, offsetB);
+      // ... (rest of the adjustments applied to pImageWorkingInstance) ...
+      if (params.contrast !== undefined && params.contrast !== 0) {
+        const contrastValue = params.contrast; const factorA = 1.0 + (contrastValue / 100.0); const offsetB = 128 * (1 - factorA);
+        pImageWorkingInstance = pImageWorkingInstance.linear(factorA, offsetB);
       }
-      // Temperature
       if (params.temperature !== undefined && params.temperature !== 0) {
-        console.log('API: Applying temperature:', params.temperature);
         const tempTintColor = temperatureToRgbTint(params.temperature);
-        if (tempTintColor) pImage = pImage.tint(tempTintColor);
+        if (tempTintColor) pImageWorkingInstance = pImageWorkingInstance.tint(tempTintColor);
       }
-      // Saturation
-      if (params.saturation !== undefined && params.saturation !== 1.0) { // Default saturation is 1
-        console.log('API: Applying saturation:', params.saturation);
-        const saturationValue = Math.max(0, params.saturation); // Ensure non-negative
-        pImage = pImage.modulate({ saturation: saturationValue });
+      if (params.saturation !== undefined && params.saturation !== 1.0) {
+        const saturationValue = Math.max(0, params.saturation);
+        pImageWorkingInstance = pImageWorkingInstance.modulate({ saturation: saturationValue });
       }
-      // Tint
       if (params.tint !== undefined && params.tint !== 0) {
-        console.log('API: Applying tint:', params.tint);
         const greenMagentaTintColor = greenMagentaTintToRgb(params.tint);
-        if (greenMagentaTintColor) pImage = pImage.tint(greenMagentaTintColor);
+        if (greenMagentaTintColor) pImageWorkingInstance = pImageWorkingInstance.tint(greenMagentaTintColor);
       }
-      // Sharpness
-      if (params.sharpness !== undefined && params.sharpness > 0) { // Apply only if sharpness > 0
-        console.log('API: Applying sharpness:', params.sharpness);
-        // Sigma calculation can be tuned. Example:
-        const sharpnessFactor = params.sharpness / 100.0; // Normalize 0-100 to 0-1
-        const sigma = 0.3 + (sharpnessFactor * 1.7); // Map to a reasonable sigma range (e.g., 0.3 to 2.0)
-        // You might also want to control flat/jagged parameters of sharpen
-        pImage = pImage.sharpen({ sigma });
+      if (params.sharpness !== undefined && params.sharpness > 0) {
+        const sharpnessFactor = params.sharpness / 100.0; const sigma = 0.3 + (sharpnessFactor * 1.7);
+        pImageWorkingInstance = pImageWorkingInstance.sharpen({ sigma });
       }
     }
     
-    // Specific named effects that might be exclusive or applied differently
     if (effect === 'grayscale') {
-      console.log('API: Applying grayscale');
-      pImage = pImage.grayscale();
+      pImageWorkingInstance = pImageWorkingInstance.grayscale();
     } else if (effect === 'resize') {
       if (params.width || params.height) {
-        console.log('API: Applying resize:', { width: params.width, height: params.height });
-        pImage = pImage.resize(
+        pImageWorkingInstance = pImageWorkingInstance.resize(
           typeof params.width === 'number' ? params.width : undefined,
           typeof params.height === 'number' ? params.height : undefined
-          // Consider adding options like fit, kernel, etc.
         );
       }
     }
-    // Note: If 'grayscale' is an effect, and it's part of an 'applyAll' or 'crop' that also has color adjustments,
-    // the order matters. Grayscale will remove color information. Typically, grayscale is an exclusive effect.
-    // The current structure implies if effect is 'grayscale', other color adjustments might not apply unless
-    // it's also part of the 'applyAll' condition. The frontend sends specific effect types.
 
-    const outputFormat = 'png'; // Or 'jpeg' based on file.type or a quality setting
+    const outputFormat = 'png';
     const mimeType = `image/${outputFormat}`;
-    const outputBuffer: Buffer = await pImage
+    const outputBuffer: Buffer = await pImageWorkingInstance
       .toFormat(outputFormat as keyof sharp.FormatEnum)
       .toBuffer();
 
-    const finalMetadata = await sharp(outputBuffer).metadata();
-    console.log('API: Final output buffer metadata:', { width: finalMetadata.width, height: finalMetadata.height, size: outputBuffer.length });
-
     return new Response(outputBuffer, {
       status: 200,
-      headers: {
-        'Content-Type': mimeType,
-        'Content-Disposition': `inline; filename="processed_image.${outputFormat}"`,
-      },
+      headers: { 'Content-Type': mimeType, 'Content-Disposition': `inline; filename="processed_image.${outputFormat}"`},
     });
 
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('API: Processing API error:', message);
+    console.error('[API /process] Overall error in POST handler:', message);
     return NextResponse.json(
       { error: 'Error processing image.', details: message } as ProcessImageResponse,
       { status: 500 }
     );
+  } finally {
+    if (tempRawInputPath) {
+      await fs.unlink(tempRawInputPath).catch(err => console.error(`[API /process] Error deleting temp RAW input file ${tempRawInputPath}:`, err));
+    }
+    if (tempTiffOutputPathFromRaw) {
+        try {
+            if (await fs.stat(tempTiffOutputPathFromRaw).then(() => true).catch(() => false)) {
+                 await fs.unlink(tempTiffOutputPathFromRaw).catch(err => console.error(`[API /process] Error deleting temp TIFF output file ${tempTiffOutputPathFromRaw}:`, err));
+            }
+        } catch { /* ignore */ }
+    }
   }
 }
